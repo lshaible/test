@@ -341,7 +341,6 @@ $windowsAuth | Select-Object 'VM Name', 'Database Count' | Format-Table
 Write-Host "`nSQL Auth Database Counts:"
 $sqlAuth | Select-Object 'VM Name', 'Database Count' | Format-Table
 #>
-#>
 
 # Copy and paste the examples above to execute them in PowerShell
 # Modify parameters as needed for your environment
