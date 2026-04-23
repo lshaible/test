@@ -368,7 +368,25 @@ Write-Host "Environment: $Environment" -ForegroundColor Cyan
 Write-Host "SQL Server Only: $(if ($SQLServerOnly) { 'Yes' } else { 'No' })" -ForegroundColor Cyan
 Write-Host "Output Path: $OutputPath" -ForegroundColor Cyan
 
+# Prepare for optional SQL authentication
+$sqlUsername = $null
+$sqlPassword = $null
+
 try {
+    # Prompt for SQL authentication if needed
+    if (-not (Get-Module -ListAvailable -Name SqlServer)) {
+        Write-Host "Note: SqlServer module not found. Database counting will show 'N/A'." -ForegroundColor Yellow
+    }
+    else {
+        $promptForAuth = Read-Host "Do you want to use SQL Server authentication for database counting? (Enter 'yes' to provide credentials, or press Enter for Windows auth)"
+        
+        if ($promptForAuth -eq 'yes') {
+            $sqlUsername = Read-Host "Enter SQL Server username"
+            $sqlPassword = Read-Host "Enter SQL Server password" -AsSecureString
+            Write-Host "SQL Server authentication enabled for database counting." -ForegroundColor Green
+        }
+    }
+    
     # Set subscription if provided
     if ($SubscriptionId) {
         Write-Host "Setting subscription to: $SubscriptionId" -ForegroundColor Yellow
@@ -427,8 +445,15 @@ try {
         if ($sqlInfo['HasSQL'] -and (Get-Module -ListAvailable -Name SqlServer)) {
             # Try to count databases using the server instance from VM name or hostname
             # For simplicity, use the VM's internal name; in production, you'd connect via FQDN
-            $databaseCount = Get-SqlDatabaseCount -ServerInstance $vmName -ErrorAction SilentlyContinue
-            if ($null -eq $databaseCount) { $databaseCount = 'Unable to connect' }
+            if ($sqlUsername -and $sqlPassword) {
+                # Use SQL authentication
+                $databaseCount = Get-SqlDatabaseCount -ServerInstance $vmName -Username $sqlUsername -Password $sqlPassword -ErrorAction SilentlyContinue
+            }
+            else {
+                # Use Windows Integrated authentication
+                $databaseCount = Get-SqlDatabaseCount -ServerInstance $vmName -ErrorAction SilentlyContinue
+            }
+            if ($null -eq $databaseCount -or $databaseCount -eq 'N/A') { $databaseCount = 'Unable to connect' }
         }
         
         $vmDetails += [PSCustomObject]@{

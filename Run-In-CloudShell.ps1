@@ -7,12 +7,25 @@ param(
     [string]$OutputStorageAccount,
     [string]$OutputStorageContainer = "reports",
     [bool]$SaveToCloudDrive = $true,
-    [bool]$SQLServerOnly = $true
+    [bool]$SQLServerOnly = $true,
+    [string]$SqlUsername,
+    [securestring]$SqlPassword
 )
 
 Write-Host "Azure VM Licensing Report - Cloud Shell Edition" -ForegroundColor Cyan
 Write-Host "Environment: $(if ($env:CLOUD_SHELL -eq 'true') { 'Azure Cloud Shell' } else { 'Local PowerShell' })" -ForegroundColor Green
 Write-Host "SQL Server Only: $(if ($SQLServerOnly) { 'Yes' } else { 'No' })" -ForegroundColor Green
+
+# Prepare for optional SQL authentication
+if (-not $SqlUsername) {
+    $promptForAuth = Read-Host "Do you want to use SQL Server authentication for database counting? (Enter 'yes' to provide credentials, or press Enter for Windows auth)"
+    
+    if ($promptForAuth -eq 'yes') {
+        $SqlUsername = Read-Host "Enter SQL Server username"
+        $SqlPassword = Read-Host "Enter SQL Server password" -AsSecureString
+        Write-Host "SQL Server authentication enabled for database counting." -ForegroundColor Green
+    }
+}
 
 # Detect Cloud Shell
 $isCloudShell = $env:CLOUD_SHELL -eq 'true'
@@ -268,8 +281,15 @@ foreach ($vm in $vms) {
     # Attempt to get database count if SQL Server is detected and module is available
     $databaseCount = 'N/A'
     if ($sqlInfo['HasSQL'] -and (Get-Module -ListAvailable -Name SqlServer)) {
-        $databaseCount = Get-SqlDatabaseCount -ServerInstance $vmName -ErrorAction SilentlyContinue
-        if ($null -eq $databaseCount) { $databaseCount = 'Unable to connect' }
+        if ($SqlUsername -and $SqlPassword) {
+            # Use SQL authentication
+            $databaseCount = Get-SqlDatabaseCount -ServerInstance $vmName -Username $SqlUsername -Password $SqlPassword -ErrorAction SilentlyContinue
+        }
+        else {
+            # Use Windows Integrated authentication
+            $databaseCount = Get-SqlDatabaseCount -ServerInstance $vmName -ErrorAction SilentlyContinue
+        }
+        if ($null -eq $databaseCount -or $databaseCount -eq 'N/A') { $databaseCount = 'Unable to connect' }
     }
     
     $vmDetails += [PSCustomObject]@{

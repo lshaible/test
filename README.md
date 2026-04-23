@@ -241,6 +241,8 @@ Get-ChildItem ~/clouddrive/azure-reports/ | Sort-Object LastWriteTime -Descendin
 - `-OutputStorageContainer`: Storage container name (default: `reports`).
 - `-SaveToCloudDrive`: Save to Cloud Shell persistent storage (default: `$true`).
 - `-SQLServerOnly` (optional): Filter to only include VMs with SQL Server (default: `$true`).
+- `-SqlUsername` (optional): SQL Server username for database counting authentication.
+- `-SqlPassword` (optional): SecureString password used with `-SqlUsername`.
 
 ## Prerequisites
 
@@ -281,6 +283,46 @@ Install-Module -Name SqlServer -Force -Scope CurrentUser
 With the SqlServer module installed, the script attempts to count user databases on each SQL Server VM using Windows Integrated Authentication (default).
 
 **Note**: Database counting requires network connectivity to the SQL Server instance. If the script cannot connect, `Database Count` will show `Unable to connect`.
+
+Connectivity guidance:
+
+- Azure Cloud Shell is not guaranteed to have line-of-sight to all SQL servers.
+- A VM may reach SQL servers that are accessible through its VNet, peering, NSG rules, and firewall paths.
+- In private endpoint or restricted network scenarios, run the report from a VM with the required network path to SQL.
+
+Troubleshooting note:
+
+- In mixed-credential environments (different SQL credentials per server), servers that do not accept the run's selected credential set may show `Unable to connect`.
+
+### Optional: SQL Server Authentication
+
+If you need to use SQL Server authentication instead of Windows Integrated Authentication:
+
+```powershell
+# Local execution
+.\Generate-AzureVMReport.ps1 -SubscriptionId "your-sub-id"
+# When prompted, enter 'yes' for SQL authentication, then provide username and password
+
+# Cloud Shell execution
+.\Run-In-CloudShell.ps1
+# When prompted, enter 'yes' for SQL authentication, then provide username and password
+
+# Or pass credentials directly (script parameters)
+$passwd = ConvertTo-SecureString "MyPassword123!" -AsPlainText -Force
+.\Run-In-CloudShell.ps1 -SqlUsername "sqladmin" -SqlPassword $passwd
+```
+
+Credential scope for a run:
+
+- The script prompts once for SQL credentials (or accepts one parameter pair).
+- The same SQL username/password is reused for all SQL Server VMs processed in that run.
+- Per-server credentials are not currently supported.
+
+**Supported Authentication Methods:**
+
+- **Windows Integrated** (default): No credentials needed; uses your Windows account
+- **SQL Server Authentication**: Username and password prompt during script execution
+- **Azure SQL Database**: SQL authentication with username and password
 
 ### For Azure Cloud Shell Execution
 

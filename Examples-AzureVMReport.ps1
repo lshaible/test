@@ -294,6 +294,53 @@ $dbCountSummary | Format-Table
 # - N/A = VMs where SqlServer module is not installed
 # - Unable to connect = SqlServer module installed but couldn't reach SQL instance
 # - Numeric values = Actual database counts (only if module installed and connection successful)
+
+<#
+EXAMPLE 22: Generate report with SQL Server Authentication
+---
+# Runs the report and prompts for SQL username/password for database counting
+.\Generate-AzureVMReport.ps1 -SubscriptionId "your-sub-id"
+
+# When prompted:
+# - "Do you want to use SQL Server authentication for database counting? (Enter 'yes' to provide credentials...)"
+# - Enter 'yes'
+# - Provide SQL username when prompted
+# - Provide SQL password when prompted
+# - These credentials are reused for all SQL Server VMs in this run
+
+# Database Count column will now use SQL authentication instead of Windows auth
+#>
+
+<#
+EXAMPLE 23: Pass SQL credentials as script parameters (Cloud Shell)
+---
+$sqlPassword = ConvertTo-SecureString "MyPassword123!" -AsPlainText -Force
+.\Run-In-CloudShell.ps1 -SqlUsername "sqladmin" -SqlPassword $sqlPassword
+
+# The script will use this single credential set for all database counting operations in the run
+# Per-server credentials are not currently supported
+#>
+
+<#
+EXAMPLE 24: Compare database counts with different authentication methods
+---
+# Generate report with Windows auth
+.\Generate-AzureVMReport.ps1 -OutputPath "C:\Reports\report_windows_auth.xlsx"
+
+# Generate report with SQL auth
+$sqlPassword = ConvertTo-SecureString "MyPassword123!" -AsPlainText -Force
+$reportSql = "C:\Reports\report_sql_auth.xlsx"
+
+# You could then compare results or merge findings
+$windowsAuth = Import-Excel -Path "C:\Reports\report_windows_auth.xlsx" -WorksheetName "VMs"
+$sqlAuth = Import-Excel -Path $reportSql -WorksheetName "VMs"
+
+Write-Host "Windows Auth Database Counts:"
+$windowsAuth | Select-Object 'VM Name', 'Database Count' | Format-Table
+
+Write-Host "`nSQL Auth Database Counts:"
+$sqlAuth | Select-Object 'VM Name', 'Database Count' | Format-Table
+#>
 #>
 
 # Copy and paste the examples above to execute them in PowerShell
