@@ -74,6 +74,13 @@ if (-not (Test-ImportExcelModule)) {
 
 Import-Module ImportExcel
 
+# Check if SqlServer module is available (needed for database counting)
+$sqlServerModuleAvailable = Get-Module -ListAvailable -Name SqlServer
+if (-not $sqlServerModuleAvailable) {
+    Write-Host "Note: SqlServer PowerShell module not found. Database counting will be skipped." -ForegroundColor Yellow
+    Write-Host "To enable database discovery, install with: Install-Module -Name SqlServer -Force" -ForegroundColor Cyan
+}
+
 # Function to get VM vCPU count
 function Get-VMvCPUCount {
     param(
@@ -253,6 +260,108 @@ function Get-WindowsLicensingType {
     return "N/A"
 }
 
+# Function to find VMs with SQL IaaS Agent Extension (discovers custom/non-marketplace SQL)
+function Get-VMsWithSQLExtension {
+    Write-Host "Scanning for VMs with SQL IaaS Agent Extension..." -ForegroundColor Yellow
+    
+    try {
+        $query = "resources | where type =~ 'microsoft.compute/virtualmachines/extensions' | where name has_any ('SqlIaasAgent','SqlIaas') | project vmId=split(id, '/')[8], vmName=split(id, '/')[8], extensionName=name, resourceGroup, subscriptionId"
+        $queryResult = az graph query -q $query --query "data" --only-show-errors -o json 2>&1
+        
+        # Check if result looks like an error (not JSON)
+        if ($queryResult -match '^\s*(ERROR|error|Error|Request)' -or $queryResult -notmatch '^\s*(\[|\{)') {
+            Write-Host "SQL IaaS Agent Extension discovery not available (insufficient permissions or unsupported query)" -ForegroundColor Yellow
+            return @()
+        }
+        
+        if (-not $queryResult -or $queryResult -eq '[]' -or [string]::IsNullOrWhiteSpace($queryResult)) {
+            Write-Host "No VMs with SQL IaaS Agent Extension found" -ForegroundColor Green
+            return @()
+        }
+        
+        $sqlExtensionVMs = $queryResult | ConvertFrom-Json -ErrorAction Stop
+        $count = if ($sqlExtensionVMs -is [array]) { $sqlExtensionVMs.Count } else { if ($sqlExtensionVMs) { 1 } else { 0 } }
+        
+        Write-Host "Found $count VMs with SQL IaaS Agent Extension" -ForegroundColor Green
+        return $sqlExtensionVMs
+    }
+    catch {
+        Write-Host "SQL IaaS Agent Extension discovery skipped (error: $($_.Exception.Message))" -ForegroundColor Yellow
+        return @()
+    }
+}
+
+# Function to discover Azure SQL managed services (Database servers and Managed Instances)
+function Get-AzureSQLResources {
+    Write-Host "Scanning for Azure SQL Database servers and Managed Instances..." -ForegroundColor Yellow
+    
+    try {
+        $query = "resources | where type in~ ('microsoft.sql/servers','microsoft.sql/managedinstances') | project name, type, location, resourceGroup, subscriptionId, fullyQualifiedDomainName=tostring(properties.fullyQualifiedDomainName), adminLogin=tostring(properties.administratorLogin)"
+        $queryResult = az graph query -q $query --query "data" --only-show-errors -o json 2>&1
+        
+        if (-not $queryResult -or $queryResult -eq '[]' -or [string]::IsNullOrWhiteSpace($queryResult)) {
+            Write-Host "No Azure SQL resources found" -ForegroundColor Green
+            return @()
+        }
+        
+        $sqlResources = $queryResult | ConvertFrom-Json -ErrorAction Stop
+        $count = if ($sqlResources -is [array]) { $sqlResources.Count } else { if ($sqlResources) { 1 } else { 0 } }
+        
+        Write-Host "Found $count Azure SQL resources" -ForegroundColor Green
+        return $sqlResources
+    }
+    catch {
+        Write-Host "Note: Azure SQL resource discovery unavailable (error: $($_.Exception.Message))." -ForegroundColor Yellow
+        return @()
+    }
+}
+
+# Function to count databases in a SQL Server instance
+function Get-SqlDatabaseCount {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ServerInstance,
+        
+        [string]$Database = "master",
+        [string]$Username,
+        [SecureString]$Password,
+        [string]$AccessToken
+    )
+    
+    try {
+        $query = "SELECT COUNT(*) AS database_count FROM sys.databases WHERE database_id > 4;"
+        
+        if ($AccessToken) {
+            # Use Entra/AAD token (Azure SQL auth)
+            $result = Invoke-Sqlcmd -ServerInstance $ServerInstance -Database $Database -AccessToken $AccessToken -Query $query -ErrorAction Stop 2>$null
+        }
+        elseif ($Username -and $Password) {
+            # Use SQL authentication with a secure password input.
+            $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($Password)
+            try {
+                $plainPassword = [System.Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+                $result = Invoke-Sqlcmd -ServerInstance $ServerInstance -Database $Database -Username $Username -Password $plainPassword -Query $query -ErrorAction Stop 2>$null
+            }
+            finally {
+                if ($bstr -ne [IntPtr]::Zero) {
+                    [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+                }
+                $plainPassword = $null
+            }
+        }
+        else {
+            # Use integrated/Windows authentication
+            $result = Invoke-Sqlcmd -ServerInstance $ServerInstance -Database $Database -Query $query -ErrorAction Stop 2>$null
+        }
+        
+        return $result.database_count
+    }
+    catch {
+        Write-Host "  Warning: Could not connect to $ServerInstance - $_" -ForegroundColor Yellow
+        return "N/A"
+    }
+}
+
 # Main script
 Write-Host "Starting Azure VM Report Generation..." -ForegroundColor Cyan
 Write-Host "Environment: $Environment" -ForegroundColor Cyan
@@ -313,6 +422,15 @@ try {
         $vCPUCount = Get-VMvCPUCount -VMSize $vmSize -Location $vmFullInfo[7]
         $windowsLicense = Get-WindowsLicensingType -OSType $osType -ImagePublisher $vmFullInfo[2] -ImageOffer $vmFullInfo[3] -VmLicenseType $vmFullInfo[8] -Tags $vmTags
         
+        # Attempt to get database count if SQL Server is detected and module is available
+        $databaseCount = 'N/A'
+        if ($sqlInfo['HasSQL'] -and (Get-Module -ListAvailable -Name SqlServer)) {
+            # Try to count databases using the server instance from VM name or hostname
+            # For simplicity, use the VM's internal name; in production, you'd connect via FQDN
+            $databaseCount = Get-SqlDatabaseCount -ServerInstance $vmName -ErrorAction SilentlyContinue
+            if ($null -eq $databaseCount) { $databaseCount = 'Unable to connect' }
+        }
+        
         $vmDetails += [PSCustomObject]@{
             'Subscription' = $subscriptionInfo.name
             'Resource Group' = $resourceGroup
@@ -327,11 +445,17 @@ try {
             'SQL Version' = $sqlInfo['SQLVersion']
             'SQL Edition' = $sqlInfo['SQLEdition']
             'SQL License' = $sqlInfo['SQLLicense']
+            'Database Count' = $databaseCount
             'SQL Enterprise Required' = if ($sqlInfo['HasSQL'] -and $sqlInfo['SQLEdition'] -eq 'Enterprise') { 'Yes' } else { 'No' }
             'Provisioning State' = $vmFullInfo[5]
             'Scan Date' = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
         }
     }
+    
+    # Discover SQL servers beyond VM marketplace images
+    Write-Host "`n=== Enhanced SQL Server Discovery ===" -ForegroundColor Cyan
+    $vmsWithExtension = Get-VMsWithSQLExtension
+    $azureSqlResources = Get-AzureSQLResources
     
     if ($vmDetails.Count -eq 0) {
         Write-Host "No VMs found in the subscription." -ForegroundColor Yellow
@@ -455,6 +579,38 @@ try {
         $summaryHeaders.Style.Fill.PatternType = [OfficeOpenXml.Style.ExcelFillStyle]::Solid
         $summaryHeaders.Style.Fill.BackgroundColor.SetColor([System.Drawing.Color]::FromArgb(70, 120, 180))
         $summaryHeaders.Style.Font.Color.SetColor([System.Drawing.Color]::White)
+        
+        # Add worksheet for VMs with SQL IaaS Agent Extension (custom/non-marketplace SQL)
+        if ($vmsWithExtension) {
+            $extCount = if ($vmsWithExtension -is [array]) { $vmsWithExtension.Count } else { 1 }
+            if ($extCount -gt 0) {
+                Write-Host "Adding $extCount SQL IaaS Agent Extension discoveries..." -ForegroundColor Gray
+                $vmsWithExtension | Export-Excel -ExcelPackage $excel -WorksheetName "SQL IaaS Extensions" -AutoSize -TableName "SQLExtensions" -TableStyle "Light10" -PassThru > $null
+                
+                $extSh = $excel.Workbook.Worksheets["SQL IaaS Extensions"]
+                $extHeaders = $extSh.Cells["A1:E1"]
+                $extHeaders.Style.Font.Bold = $true
+                $extHeaders.Style.Fill.PatternType = [OfficeOpenXml.Style.ExcelFillStyle]::Solid
+                $extHeaders.Style.Fill.BackgroundColor.SetColor([System.Drawing.Color]::FromArgb(70, 120, 180))
+                $extHeaders.Style.Font.Color.SetColor([System.Drawing.Color]::White)
+            }
+        }
+        
+        # Add worksheet for Azure SQL Database Servers and Managed Instances
+        if ($azureSqlResources) {
+            $sqlCount = if ($azureSqlResources -is [array]) { $azureSqlResources.Count } else { 1 }
+            if ($sqlCount -gt 0) {
+                Write-Host "Adding $sqlCount Azure SQL resource discoveries..." -ForegroundColor Gray
+                $azureSqlResources | Export-Excel -ExcelPackage $excel -WorksheetName "Azure SQL Resources" -AutoSize -TableName "AzureSQLResources" -TableStyle "Light10" -PassThru > $null
+                
+                $sqlSh = $excel.Workbook.Worksheets["Azure SQL Resources"]
+                $sqlHeaders = $sqlSh.Cells["A1:H1"]
+                $sqlHeaders.Style.Font.Bold = $true
+                $sqlHeaders.Style.Fill.PatternType = [OfficeOpenXml.Style.ExcelFillStyle]::Solid
+                $sqlHeaders.Style.Fill.BackgroundColor.SetColor([System.Drawing.Color]::FromArgb(70, 120, 180))
+                $sqlHeaders.Style.Font.Color.SetColor([System.Drawing.Color]::White)
+            }
+        }
         
         # Save and close
         $excel.Save()

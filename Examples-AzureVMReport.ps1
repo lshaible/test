@@ -225,5 +225,76 @@ EXAMPLE 17: Run from Azure Cloud Shell and include all VMs
 Output: Saves an all-VM report to ~/clouddrive/azure-reports/
 #>
 
+<#
+EXAMPLE 18: Install SqlServer PowerShell module (optional for Database Count)
+---
+# Install the SqlServer module to enable database counting in reports
+Install-Module -Name SqlServer -Force -Scope CurrentUser
+
+# Verify installation
+Get-Module -ListAvailable -Name SqlServer
+
+# Now when you run Generate-AzureVMReport.ps1, it will attempt to count databases
+# on each SQL Server VM and populate the "Database Count" column
+#>
+
+<#
+EXAMPLE 19: Generate report with Database Count column (requires SqlServer module)
+---
+# First install SqlServer module (see EXAMPLE 18)
+Install-Module -Name SqlServer -Force -Scope CurrentUser
+
+# Then run the report
+$reportPath = "C:\Reports\report_with_dbcount_$(Get-Date -Format 'yyyyMMdd_HHmmss').xlsx"
+.\Generate-AzureVMReport.ps1 -OutputPath $reportPath
+
+# Import and display Database Count for each SQL Server VM
+$excelData = Import-Excel -Path $reportPath -WorksheetName "VMs"
+$sqlVMs = $excelData | Where-Object { $_.'Has SQL Server' -eq 'Yes' }
+$sqlVMs | Select-Object 'VM Name', 'SQL Edition', 'Database Count'
+
+# Values:
+# - "N/A" means SqlServer module is not installed
+# - "Unable to connect" means module is installed but couldn't connect to the SQL instance
+# - Numeric value is the actual count of user databases
+#>
+
+<#
+EXAMPLE 20: Query databases on a specific SQL Server VM using SqlServer module
+---
+# Requires SqlServer module installed (see EXAMPLE 18)
+
+# Count user databases on a specific server (Windows Integrated Auth)
+$serverName = "WSSQL-VM3"
+$query = "SELECT COUNT(*) as DBCount FROM sys.databases WHERE database_id > 4"
+$result = Invoke-Sqlcmd -ServerInstance $serverName -Query $query
+Write-Host "Database count on $serverName : $($result.DBCount)"
+
+# List all databases on the server
+Invoke-Sqlcmd -ServerInstance $serverName -Query "SELECT name FROM sys.databases ORDER BY name"
+
+# Check SQL Server version
+Invoke-Sqlcmd -ServerInstance $serverName -Query "SELECT @@VERSION"
+#>
+
+<#
+EXAMPLE 21: Validate Database Count values in generated report
+---
+$reportPath = "C:\Reports\report_$(Get-Date -Format 'yyyyMMdd_HHmmss').xlsx"
+.\Generate-AzureVMReport.ps1 -OutputPath $reportPath
+
+$excelData = Import-Excel -Path $reportPath -WorksheetName "VMs"
+
+# Count occurrences of each Database Count value
+$dbCountSummary = $excelData | Group-Object -Property 'Database Count' | Select-Object Name, Count
+Write-Host "Database Count Summary:"
+$dbCountSummary | Format-Table
+
+# Expected results:
+# - N/A = VMs where SqlServer module is not installed
+# - Unable to connect = SqlServer module installed but couldn't reach SQL instance
+# - Numeric values = Actual database counts (only if module installed and connection successful)
+#>
+
 # Copy and paste the examples above to execute them in PowerShell
 # Modify parameters as needed for your environment

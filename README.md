@@ -15,6 +15,12 @@ Supports both **local execution** and **Azure Cloud Shell execution**.
 - **Comprehensive Metrics**: Generates summary statistics for SQL Server deployments.
 - **Cloud Shell Support**: Run reports directly from Azure Cloud Shell without local tools.
 - **Flexible Filtering**: Option to include all VMs or SQL Server only.
+- **Enhanced SQL Discovery**: Discovers SQL Server instances beyond marketplace images:
+  - Detects VMs with SQL IaaS Agent Extension (custom/non-marketplace deployments)
+  - Discovers Azure SQL Database servers
+  - Discovers Azure SQL Managed Instances
+- **Database Discovery** (optional): Counts user databases in SQL Server VMs when SqlServer module is installed
+- **Multiple Discovery Methods**: Combines marketplace image detection with IaaS Agent Extension and Azure Resource Graph queries
 
 ## Scripts
 
@@ -49,40 +55,44 @@ Main script that generates the Excel report with VM details. **By default, only 
 
 **Output:**
 
-Creates an Excel file with two worksheets:
+Creates an Excel file with multiple worksheets:
 
-- **VMs**: Detailed list of all VMs with columns:
-  - Subscription
-  - Resource Group
-  - VM Name
-  - VM Size
-  - vCPU Count
-  - OS Type
-  - Publisher
-  - Offer
-  - Windows License (License Required, BYOL, N/A)
-  - Has SQL Server (Yes/No)
-  - SQL Version (SQL Server 2016/2017/2019/2022/2025)
-  - SQL Edition (Enterprise, Standard, Express, Developer, Web)
-  - SQL License (License Required, BYOL, Free, etc.)
-  - SQL Enterprise Required (Yes/No)
-  - Provisioning State
-  - Scan Date
-- **Summary**: Key metrics including:
-  - Total VMs
-  - Total vCPUs
-  - Windows VMs count
-  - Linux VMs count
+- **VMs**: Detailed inventory of all discovered VMs with SQL Server deployment and licensing information. This is the primary sheet for license compliance audits and capacity planning.
+  - **Columns**:
+    - Subscription, Resource Group, VM Name, VM Size
+    - vCPU Count (total processors for licensing calculations)
+    - OS Type (Windows/Linux)
+    - Publisher, Offer (VM image source)
+    - Windows License (License Required, BYOL, N/A)
+    - Has SQL Server (Yes/No)
+    - SQL Version (2016/2017/2019/2022/2025)
+    - SQL Edition (Enterprise, Standard, Express, Developer, Web)
+    - SQL License (License Required, BYOL, Free, etc.)
+    - Database Count (user database count; `N/A` if SqlServer module not installed, `Unable to connect` if connection fails)
+    - SQL Enterprise Required (Yes/No) — editable dropdown for licensing review overrides
+    - Provisioning State
+    - Scan Date
+- **Summary**: High-level licensing and deployment metrics for capacity planning and cost analysis:
+  - Total VMs / Total vCPUs (overall compute footprint)
+  - Windows vs. Linux VM breakdown
   - VMs with SQL Server count
-  - SQL Server 2025 instances
-  - SQL Server 2022 instances
-  - SQL Server 2019 instances
-  - SQL Server Enterprise edition instances
-  - SQL Enterprise Required (Yes) count
-  - SQL Server Standard edition instances
-  - SQL Server Developer edition instances
-  - SQL Server Express edition instances
-  - Report generation time
+  - SQL Server versions by count (2025, 2022, 2019, etc.)
+  - SQL Server editions by count (Enterprise, Standard, Express, Developer)
+  - SQL Enterprise Required count (impact for licensing compliance)
+  - Report generation timestamp
+
+- **SQL IaaS Extensions** (if found): VMs with SQL IaaS Agent Extension installed (non-marketplace/custom SQL deployments). Use this tab to identify SQL Server instances not deployed from Azure marketplace images.
+  - **Columns**: name, type, location, resourceGroup, subscriptionId
+
+- **Azure SQL Resources** (if found): Cloud-native SQL Database servers and SQL Managed Instances (not running on VMs). These are managed services where Microsoft handles the infrastructure and licensing—a different licensing model than SQL Server VMs in Azure or on-premises SQL Server deployments.
+  - **Columns**:
+    - name — Resource name
+    - type — `microsoft.sql/servers` or `microsoft.sql/managedinstances`
+    - location — Azure region
+    - resourceGroup — Azure resource group
+    - subscriptionId — Subscription ID
+    - fullyQualifiedDomainName — Connection endpoint (e.g., `myserver.database.windows.net`)
+    - adminLogin — Administrator account username
 
 ### 2. Generate-AzureVMReport-Scheduled.ps1
 
@@ -245,12 +255,32 @@ Get-ChildItem ~/clouddrive/azure-reports/ | Sort-Object LastWriteTime -Descendin
 2. **Permissions**: Must have permissions to:
    - List VMs in the Azure subscription.
    - Read VM properties.
+   - Query Azure Resource Graph (for SQL discovery).
 
 ### For Local Execution
 
 - PowerShell 5.1 or higher.
 - Windows, macOS, or Linux.
 - ImportExcel module (auto-installed on first run).
+- **Optional**: SqlServer PowerShell module (enables the `Database Count` column in VMs sheet).
+  - Without this module, the `Database Count` column will show `N/A`.
+  - Install with:
+  
+  ```powershell
+  Install-Module -Name SqlServer -Force -Scope CurrentUser
+  ```
+
+### For Database Counting (Optional)
+
+To enable the **Database Count** column in the VMs sheet, install the SqlServer PowerShell module:
+
+```powershell
+Install-Module -Name SqlServer -Force -Scope CurrentUser
+```
+
+With the SqlServer module installed, the script attempts to count user databases on each SQL Server VM using Windows Integrated Authentication (default).
+
+**Note**: Database counting requires network connectivity to the SQL Server instance. If the script cannot connect, `Database Count` will show `Unable to connect`.
 
 ### For Azure Cloud Shell Execution
 
