@@ -208,6 +208,26 @@ function Get-WindowsLicensingType {
     return "N/A"
 }
 
+function Get-SqlDatabaseCount {
+    param(
+        [string]$ServerInstance
+    )
+    
+    try {
+        # Check if SqlServer module is available
+        if (-not (Get-Module -ListAvailable -Name SqlServer)) {
+            return $null
+        }
+        
+        $query = "SELECT COUNT(*) as [DBCount] FROM sys.databases WHERE database_id > 4"
+        $result = Invoke-Sqlcmd -ServerInstance $ServerInstance -Query $query -ErrorAction Stop
+        return $result[0].DBCount
+    }
+    catch {
+        return $null
+    }
+}
+
 # Process VMs
 foreach ($vm in $vms) {
     $vmId = $vm[0]
@@ -245,6 +265,13 @@ foreach ($vm in $vms) {
     $vCPUCount = Get-VMvCPUCount -VMSize $vmSize -Location $vmFullInfo[7]
     $windowsLicense = Get-WindowsLicensingType -OSType $osType -ImagePublisher $vmFullInfo[2] -ImageOffer $vmFullInfo[3] -VmLicenseType $vmFullInfo[8] -Tags $vmTags
     
+    # Attempt to get database count if SQL Server is detected and module is available
+    $databaseCount = 'N/A'
+    if ($sqlInfo['HasSQL'] -and (Get-Module -ListAvailable -Name SqlServer)) {
+        $databaseCount = Get-SqlDatabaseCount -ServerInstance $vmName -ErrorAction SilentlyContinue
+        if ($null -eq $databaseCount) { $databaseCount = 'Unable to connect' }
+    }
+    
     $vmDetails += [PSCustomObject]@{
         'Subscription' = $subscriptionInfo.name
         'Resource Group' = $resourceGroup
@@ -259,6 +286,7 @@ foreach ($vm in $vms) {
         'SQL Version' = $sqlInfo['SQLVersion']
         'SQL Edition' = $sqlInfo['SQLEdition']
         'SQL License' = $sqlInfo['SQLLicense']
+        'Database Count' = $databaseCount
         'SQL Enterprise Required' = if ($sqlInfo['HasSQL'] -and $sqlInfo['SQLEdition'] -eq 'Enterprise') { 'Yes' } else { 'No' }
         'Provisioning State' = $vmFullInfo[5]
         'Scan Date' = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
@@ -276,7 +304,7 @@ else {
     
     # Format headers
     $ws = $excel.Workbook.Worksheets["VMs"]
-    $headerRange = $ws.Cells["A1:P1"]
+    $headerRange = $ws.Cells["A1:Q1"]
     $headerRange.Style.Font.Bold = $true
     $headerRange.Style.Fill.PatternType = [OfficeOpenXml.Style.ExcelFillStyle]::Solid
     $headerRange.Style.Fill.BackgroundColor.SetColor([System.Drawing.Color]::FromArgb(70, 120, 180))
